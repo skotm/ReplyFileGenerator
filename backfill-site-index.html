@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MeteoQuake リプレイファイル作成</title>
+<style>
+  :root {
+    --bg: #0b0b0f;
+    --card: #16161d;
+    --border: rgba(255,255,255,0.1);
+    --text: #f2f2f5;
+    --text-dim: rgba(242,242,245,0.6);
+    --accent: #0A84FF;
+    --danger: #FF453A;
+    --ok: #30D158;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 20px;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 20px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 12px; }
+  label { display: block; font-size: 12px; color: var(--text-dim); margin: 10px 0 4px; }
+  input[type="text"], input[type="datetime-local"], input[type="number"], input[type="password"] {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.05);
+    color: var(--text);
+    font-size: 14px;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.secondary { background: rgba(255,255,255,0.1); color: var(--text); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .quake-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+  .quake-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.04);
+    font-size: 13px; cursor: pointer; border: 1px solid transparent;
+  }
+  .quake-item:hover { border-color: var(--accent); }
+  .quake-item.selected { border-color: var(--accent); background: rgba(10,132,255,0.15); }
+  .quake-item .meta { color: var(--text-dim); font-size: 11px; }
+  .progress-bar-outer {
+    height: 8px; border-radius: 4px; background: rgba(255,255,255,0.1); overflow: hidden; margin: 10px 0;
+  }
+  .progress-bar-inner { height: 100%; background: var(--accent); transition: width 0.3s; }
+  .status-text { font-size: 12px; color: var(--text-dim); }
+  .error-text { font-size: 12px; color: var(--danger); margin-top: 6px; }
+  .ok-text { color: var(--ok); }
+  .small-note { font-size: 11px; color: var(--text-dim); margin-top: 8px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<h1>MeteoQuake リプレイファイル作成</h1>
+<div class="subtitle">強震モニタの過去データから、MeteoQuakeで再生できるリプレイファイルを生成します</div>
+
+<div class="card">
+  <h2>1. 接続先設定</h2>
+  <label for="workerUrl">バックフィルサーバーURL</label>
+  <input type="text" id="workerUrl" placeholder="https://meteoquake-backfill.xxxxx.workers.dev">
+  <label for="apiToken">アクセストークン</label>
+  <input type="password" id="apiToken" placeholder="トークンを入力">
+  <div class="small-note">この画面で入力した内容はブラウザのlocalStorageにのみ保存され、次回開いた時に復元されます。</div>
+</div>
+
+<div class="card">
+  <h2>2. 直近の地震から選ぶ(任意)</h2>
+  <div class="row" style="margin-bottom: 10px;">
+    <button id="fetchQuakesBtn" class="secondary">直近4時間の地震情報を取得</button>
+  </div>
+  <div id="quakeList" class="quake-list"></div>
+  <div id="quakeError" class="error-text"></div>
+</div>
+
+<div class="card">
+  <h2>3. 取得範囲</h2>
+  <label for="startTime">開始時刻(ローカル時刻で入力)</label>
+  <input type="datetime-local" id="startTime" step="1">
+  <label for="endTime">終了時刻</label>
+  <input type="datetime-local" id="endTime" step="1">
+  <label for="stepSeconds">取得間隔(秒)</label>
+  <input type="number" id="stepSeconds" value="1" min="1">
+  <label for="fileName">ファイル名</label>
+  <input type="text" id="fileName" placeholder="例: 20260827_三陸沖M6.1">
+  <div class="small-note">地震を選択すると、発生時刻の前後を含む範囲とファイル名が自動入力されます(手動で調整可)。</div>
+</div>
+
+<div class="card">
+  <h2>4. ジョブ実行</h2>
+  <button id="createJobBtn">ジョブを作成</button>
+  <div id="jobStatus" style="margin-top: 12px; display: none;">
+    <div class="status-text" id="jobStatusText">-</div>
+    <div class="progress-bar-outer"><div class="progress-bar-inner" id="progressBar" style="width: 0%;"></div></div>
+    <div id="jobErrorList" class="error-text"></div>
+    <button id="downloadBtn" class="secondary" style="display: none; margin-top: 8px;">リプレイファイルをダウンロード</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+
+  // ── 設定の永続化(localStorage) ──────────────────────
+  const workerUrlEl = $("workerUrl");
+  const apiTokenEl = $("apiToken");
+  workerUrlEl.value = localStorage.getItem("backfill_workerUrl") || "";
+  apiTokenEl.value = localStorage.getItem("backfill_apiToken") || "";
+  workerUrlEl.addEventListener("change", () => localStorage.setItem("backfill_workerUrl", workerUrlEl.value.trim()));
+  apiTokenEl.addEventListener("change", () => localStorage.setItem("backfill_apiToken", apiTokenEl.value.trim()));
+
+  function workerBase() {
+    return workerUrlEl.value.trim().replace(/\/$/, "");
+  }
+  function authHeaders() {
+    const token = apiTokenEl.value.trim();
+    return token ? { Authorization: "Bearer " + token } : {};
+  }
+
+  // ── P2P地震情報APIから直近の地震を取得 ──────────────────────
+  // レスポンス形式(v2, code=551):
+  //   { earthquake: { time: "YYYY/MM/DD HH:mm:ss"(JST), hypocenter: { name, magnitude, depth }, maxScale } }
+  function parseP2PTime(str) {
+    // "2026/04/20 16:53:00" (JST, オフセット表記無し) を正しくUTC基準のDateに変換する
+    const iso = str.replace(/\//g, "-").replace(" ", "T") + "+09:00";
+    return new Date(iso);
+  }
+
+  function formatDateForFilename(date) {
+    // ブラウザのタイムゾーンに関わらず、常に日本時間(JST, UTC+9)の日付を使う。
+    // (海外のタイムゾーンで開いた場合でも日付がズレないようにするため)
+    const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+    const y = jst.getUTCFullYear();
+    const m = String(jst.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(jst.getUTCDate()).padStart(2, "0");
+    return `${y}${m}${d}`;
+  }
+
+  function sanitizeForFilename(s) {
+    // ファイル名に使えない文字だけ念のため除去(震源地名は通常問題ないはずだが保険)
+    return s.replace(/[\\/:*?"<>|]/g, "");
+  }
+
+  function toDatetimeLocalValue(date) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  let selectedQuakeEl = null;
+
+  async function fetchRecentQuakes() {
+    const listEl = $("quakeList");
+    const errEl = $("quakeError");
+    listEl.innerHTML = "取得中...";
+    errEl.textContent = "";
+
+    try {
+      const res = await fetch("https://api.p2pquake.net/v2/history?codes=551&limit=30");
+      if (!res.ok) throw new Error(`P2P地震情報APIエラー: ${res.status}`);
+      const data = await res.json();
+
+      const fourHoursAgo = Date.now() - 4 * 60 * 60 * 1000;
+      const recent = data
+        .filter((item) => item.earthquake && item.earthquake.time)
+        .map((item) => ({ ...item, _parsedTime: parseP2PTime(item.earthquake.time) }))
+        .filter((item) => item._parsedTime.getTime() >= fourHoursAgo)
+        .sort((a, b) => b._parsedTime - a._parsedTime);
+
+      listEl.innerHTML = "";
+      if (recent.length === 0) {
+        listEl.innerHTML = '<div class="status-text">直近4時間以内の地震情報はありません。</div>';
+        return;
+      }
+
+      for (const item of recent) {
+        const eq = item.earthquake;
+        const hypo = eq.hypocenter || {};
+        const magText = typeof hypo.magnitude === "number" && hypo.magnitude > 0 ? `M${hypo.magnitude}` : "M不明";
+        const scaleText = eq.maxScale != null ? `最大震度${(eq.maxScale / 10).toFixed(1).replace(".0", "")}` : "";
+
+        const el = document.createElement("div");
+        el.className = "quake-item";
+        el.innerHTML = `
+          <div>
+            <div>${hypo.name || "震源不明"} ${magText}</div>
+            <div class="meta">${item._parsedTime.toLocaleString("ja-JP")} ${scaleText}</div>
+          </div>
+        `;
+        el.addEventListener("click", () => selectQuake(item, el));
+        listEl.appendChild(el);
+      }
+    } catch (e) {
+      errEl.textContent = "地震情報の取得に失敗しました: " + e.message;
+      listEl.innerHTML = "";
+    }
+  }
+
+  function selectQuake(item, el) {
+    if (selectedQuakeEl) selectedQuakeEl.classList.remove("selected");
+    el.classList.add("selected");
+    selectedQuakeEl = el;
+
+    const eq = item.earthquake;
+    const hypo = eq.hypocenter || {};
+    const originTime = item._parsedTime;
+
+    // 発生5分前 〜 30分後を初期範囲にする(手動で調整可能)
+    const start = new Date(originTime.getTime() - 5 * 60 * 1000);
+    const end = new Date(originTime.getTime() + 30 * 60 * 1000);
+    $("startTime").value = toDatetimeLocalValue(start);
+    $("endTime").value = toDatetimeLocalValue(end);
+
+    const magText = typeof hypo.magnitude === "number" && hypo.magnitude > 0 ? `M${hypo.magnitude}` : "";
+    const dateStr = formatDateForFilename(originTime);
+    const nameStr = sanitizeForFilename(hypo.name || "震源不明");
+    $("fileName").value = `${dateStr}_${nameStr}${magText}`;
+  }
+
+  $("fetchQuakesBtn").addEventListener("click", fetchRecentQuakes);
+
+  // ── ジョブ作成・進捗ポーリング・ダウンロード ──────────────────────
+  let pollTimer = null;
+
+  async function createJob() {
+    const base = workerBase();
+    if (!base) { alert("バックフィルサーバーURLを入力してください"); return; }
+
+    const startVal = $("startTime").value;
+    const endVal = $("endTime").value;
+    const stepSeconds = Number($("stepSeconds").value) || 1;
+    if (!startVal || !endVal) { alert("開始時刻・終了時刻を入力してください"); return; }
+
+    // datetime-local はタイムゾーン情報を持たないローカル時刻文字列なので、
+    // ブラウザのローカルタイムゾーンとして解釈させてからISO(UTC)に変換する
+    const startIso = new Date(startVal).toISOString();
+    const endIso = new Date(endVal).toISOString();
+
+    $("createJobBtn").disabled = true;
+    $("jobStatus").style.display = "block";
+    $("jobStatusText").textContent = "ジョブを作成しています...";
+    $("progressBar").style.width = "0%";
+    $("jobErrorList").textContent = "";
+    $("downloadBtn").style.display = "none";
+
+    try {
+      const res = await fetch(`${base}/v1/backfill/jobs`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ startTime: startIso, endTime: endIso, stepSeconds }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+
+      pollJob(body.jobId);
+    } catch (e) {
+      $("jobStatusText").textContent = "ジョブ作成に失敗しました: " + e.message;
+      $("createJobBtn").disabled = false;
+    }
+  }
+
+  async function pollJob(jobId) {
+    const base = workerBase();
+    if (pollTimer) clearInterval(pollTimer);
+
+    async function tick() {
+      try {
+        const res = await fetch(`${base}/v1/backfill/jobs/${jobId}`, { headers: authHeaders() });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+
+        const pct = Math.round((body.progressRatio || 0) * 100);
+        $("progressBar").style.width = pct + "%";
+        $("jobStatusText").textContent =
+          `${body.processedCount}/${body.totalCount}件処理済み (${pct}%)` +
+          (body.errorCount > 0 ? ` / エラー${body.errorCount}件` : "");
+
+        if (body.recentErrors && body.recentErrors.length > 0) {
+          $("jobErrorList").textContent = "直近のエラー: " + body.recentErrors.slice(-3).join(" / ");
+        }
+
+        if (body.failed) {
+          clearInterval(pollTimer);
+          $("jobStatusText").textContent = "ジョブが失敗しました: " + (body.failureReason || "不明なエラー");
+          $("createJobBtn").disabled = false;
+          return;
+        }
+
+        if (body.completed) {
+          clearInterval(pollTimer);
+          $("jobStatusText").innerHTML = '<span class="ok-text">完了しました。</span>';
+          $("createJobBtn").disabled = false;
+          $("downloadBtn").style.display = "inline-block";
+          $("downloadBtn").onclick = () => downloadReplay(jobId);
+        }
+      } catch (e) {
+        clearInterval(pollTimer);
+        $("jobStatusText").textContent = "進捗取得エラー: " + e.message;
+        $("createJobBtn").disabled = false;
+      }
+    }
+
+    tick();
+    pollTimer = setInterval(tick, 3000);
+  }
+
+  async function downloadReplay(jobId) {
+    const base = workerBase();
+    try {
+      const res = await fetch(`${base}/v1/backfill/jobs/${jobId}/download`, { headers: authHeaders() });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const fileNameBase = ($("fileName").value.trim() || "replay").replace(/[\\/:*?"<>|]/g, "");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${fileNameBase}.bin`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      alert("ダウンロードに失敗しました: " + e.message);
+    }
+  }
+
+  $("createJobBtn").addEventListener("click", createJob);
+
+  // 初期表示: デフォルトの時刻範囲(直近10分)を入れておく
+  const now = new Date();
+  const tenMinAgo = new Date(now.getTime() - 10 * 60 * 1000);
+  $("startTime").value = toDatetimeLocalValue(tenMinAgo);
+  $("endTime").value = toDatetimeLocalValue(now);
+})();
+</script>
+
+</body>
+</html>
